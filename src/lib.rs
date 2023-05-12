@@ -7,7 +7,7 @@ use std::{
     convert::TryFrom,
     env, fmt,
     fs::File,
-    io::{BufReader, Read, Seek, SeekFrom},
+    io::{BufRead, BufReader, Cursor, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::mpsc,
 };
@@ -118,6 +118,10 @@ impl Detection {
     }
 }
 
+trait BufReadSeek: BufRead + Seek {}
+
+impl<T: BufRead + Seek> BufReadSeek for T {}
+
 /// Detects the programming language of the file at a given path
 ///
 /// If the language cannot be determined, None will be returned.
@@ -130,10 +134,10 @@ impl Detection {
 /// use hyperpolyglot::{detect, Detection};
 ///
 /// let path = Path::new("src/bin/main.rs");
-/// let language = detect(path).unwrap().unwrap();
+/// let language = detect(path, None).unwrap().unwrap();
 /// assert_eq!(Detection::Heuristics("Rust"), language);
 /// ```
-pub fn detect(path: &Path) -> Result<Option<Detection>, std::io::Error> {
+pub fn detect(path: &Path, contents: Option<&[u8]>) -> Result<Option<Detection>, std::io::Error> {
     let filename = match path.file_name() {
         Some(filename) => filename.to_str(),
         None => return Ok(None),
@@ -154,8 +158,13 @@ pub fn detect(path: &Path) -> Result<Option<Detection>, std::io::Error> {
         return Ok(Some(Detection::Extension(candidates[0])));
     };
 
-    let file = File::open(path)?;
-    let mut reader = BufReader::new(file);
+    let mut reader: Box<dyn BufReadSeek> = match contents {
+        Some(contents) => Box::new(Cursor::new(contents)),
+        None => {
+            let file = File::open(path)?;
+            Box::new(BufReader::new(file))
+        }
+    };
 
     let candidates = filter_candidates(
         candidates,
@@ -244,7 +253,7 @@ pub fn get_language_breakdown<P: AsRef<Path>>(
             if let Ok(path) = result {
                 let path = path.into_path();
                 if !path.is_dir() {
-                    if let Ok(Some(detection)) = detect(&path) {
+                    if let Ok(Some(detection)) = detect(&path, None) {
                         tx.send((detection, path)).unwrap();
                     }
                 }
@@ -299,7 +308,7 @@ mod tests {
     #[test]
     fn test_detect_filename() {
         let path = Path::new("APKBUILD");
-        let detected_language = detect(path).unwrap().unwrap();
+        let detected_language = detect(path, None).unwrap().unwrap();
 
         assert_eq!(detected_language, Detection::Filename("Alpine Abuild"));
     }
@@ -307,7 +316,7 @@ mod tests {
     #[test]
     fn test_detect_extension() {
         let path = Path::new("pizza.purs");
-        let detected_language = detect(path).unwrap().unwrap();
+        let detected_language = detect(path, None).unwrap().unwrap();
 
         assert_eq!(detected_language, Detection::Extension("PureScript"));
     }
@@ -319,7 +328,7 @@ mod tests {
         file.write(b"#!/usr/bin/python").unwrap();
         file.flush().unwrap();
 
-        let detected_language = detect(path).unwrap().unwrap();
+        let detected_language = detect(path, None).unwrap().unwrap();
 
         fs::remove_file(path).unwrap();
 
@@ -333,7 +342,7 @@ mod tests {
         file.write(b"'use strict'").unwrap();
         file.flush().unwrap();
 
-        let detected_language = detect(path).unwrap().unwrap();
+        let detected_language = detect(path, None).unwrap().unwrap();
 
         fs::remove_file(path).unwrap();
 
@@ -355,7 +364,7 @@ mod tests {
         .unwrap();
         file.flush().unwrap();
 
-        let detected_language = detect(path).unwrap().unwrap();
+        let detected_language = detect(path, None).unwrap().unwrap();
 
         fs::remove_file(path).unwrap();
         assert_eq!(detected_language, Detection::Classifier("Rust"));
@@ -375,7 +384,7 @@ mod tests {
         .unwrap();
         file.flush().unwrap();
 
-        let detected_language = detect(path).unwrap();
+        let detected_language = detect(path, None).unwrap();
 
         fs::remove_file(path).unwrap();
 
@@ -417,7 +426,7 @@ mod tests {
                     "Fstar" => "F*",
                     l => l,
                 };
-                if let Ok(Some(detection)) = detect(&file) {
+                if let Ok(Some(detection)) = detect(&file, None) {
                     total += 1;
                     if detection.language() == language {
                         correct += 1;
